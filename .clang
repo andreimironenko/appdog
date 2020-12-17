@@ -1,0 +1,5 @@
+-std=c++17
+-Iinclude
+-Isrc
+-Ibuild/_deps/json-src/include
+-Wall
