@@ -10,6 +10,8 @@
 #include <functional>
 #include <iostream>
 #include <csignal>
+#include <ratio>
+#include <chrono>
 
 #include <gtest/gtest.h>
 
@@ -25,6 +27,8 @@ namespace fs = std::filesystem;
 namespace ipc = boost::interprocess;
 using json = nlohmann::json;
 using namespace appdog;
+using namespace std;
+using namespace std::chrono;
 
 static volatile std::sig_atomic_t received_signal = 0;
 
@@ -61,26 +65,49 @@ class AppDogTest: public ::testing::Test {
     }
 };
 
-TEST_F(AppDogTest, SignalTimeOut) {
-  EXPECT_TRUE(true);
-  auto test_client = std::unique_ptr<client>(new client(getpid()));
-  size_t res = test_client->activate(5, SIGUSR1);
-  EXPECT_GT(res, 0);
-  sleep(10);
+TEST_F(AppDogTest, SignalTimeOut)
+{
+  std::unique_ptr<client> test_client;
+  ASSERT_NO_THROW(test_client = std::make_unique<client>(getpid()));
+  ASSERT_TRUE(test_client != nullptr);
+  ASSERT_NO_THROW(test_client->activate(5s, SIGUSR1));
+
+  sleep(6);
+
   EXPECT_EQ(received_signal, SIGUSR1);
 }
 
-TEST_F(AppDogTest, DeactAppDog) {
-  EXPECT_TRUE(true);
-  auto test_client = std::unique_ptr<client>(new client(getpid()));
-
-  size_t res = test_client->activate(5, SIGUSR1);
-  EXPECT_GT(res, 0);
+TEST_F(AppDogTest, DeactAppDog)
+{
+  std::unique_ptr<client> test_client;
+  ASSERT_NO_THROW(test_client = std::make_unique<client>(getpid()));
+  ASSERT_TRUE(test_client != nullptr);
+  ASSERT_NO_THROW(test_client->activate(5s, SIGUSR1));
 
   sleep(1);
 
-  res = test_client->deactivate();
-  EXPECT_GT(res, 0);
+  ASSERT_NO_THROW(test_client->deactivate());
+  received_signal = 0;
+
+  sleep(5);
+
+  EXPECT_EQ(received_signal, 0);
+}
+
+TEST_F(AppDogTest, KickAppDog)
+{
+  std::unique_ptr<client> test_client;
+  ASSERT_NO_THROW(test_client = std::make_unique<client>(getpid()));
+  ASSERT_TRUE(test_client != nullptr);
+  ASSERT_NO_THROW(test_client->activate(5s, SIGUSR1));
+
+  for (int i = 0; i < 3; ++i)
+  {
+    sleep(4);
+    ASSERT_NO_THROW(test_client->kick());
+  }
+
+  ASSERT_NO_THROW(test_client->deactivate());
 
   received_signal = 0;
 
@@ -89,27 +116,26 @@ TEST_F(AppDogTest, DeactAppDog) {
   EXPECT_EQ(received_signal, 0);
 }
 
-TEST_F(AppDogTest, KickAppDog) {
-  EXPECT_TRUE(true);
-  auto test_client = std::unique_ptr<client>(new client(getpid()));
-  size_t res = test_client->activate(5, SIGUSR1);
-  EXPECT_GT(res, 0);
+TEST_F(AppDogTest, KickRunOutTime) {
+  std::unique_ptr<client> test_client;
+  ASSERT_NO_THROW(test_client = std::make_unique<client>(getpid()));
+  ASSERT_TRUE(test_client != nullptr);
+  ASSERT_NO_THROW(test_client->activate(5s, SIGUSR1));
+
+
   for (int i = 0; i < 3; ++i)
   {
-    sleep(4.75);
-    res = test_client->kick();
-    EXPECT_GT(res, 0);
+    sleep(4);
+    ASSERT_NO_THROW(test_client->kick());
   }
 
-  res = test_client->deactivate();
-  EXPECT_GT(res, 0);
+  ASSERT_NO_THROW(test_client->deactivate());
 
   received_signal = 0;
 
   sleep(5);
 
   EXPECT_EQ(received_signal, 0);
-
 }
 
 

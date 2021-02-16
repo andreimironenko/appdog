@@ -7,14 +7,13 @@ namespace appdog::messages
 {
   struct reload : public message
   {
-    friend void to_json(json& j, const confirm& msg);
-    friend void from_json(const json& j, confirm& m);
+    friend void to_json(json& j, const message& msg);
+    friend void from_json(const json& j,message& m);
+    friend bool operator==(const message &lhs, const message &rhs);
 
-#if 0
-    explicit confirm(pid_t pid, long tid = 0) :
-      message(msg_id::CONFIRM, pid, tid)
+    reload(pid_t pid = 0, long tid = 0) :
+      message(msg_id::RELOAD, pid, tid)
     {}
-#endif
 
     friend bool operator==(const reload &lhs, const reload &rhs)
     {
@@ -26,9 +25,10 @@ namespace appdog::messages
     }
   };
 
+#if 0
   void to_json(json& j, const reload& msg)
   {
-    j = json{{"id", msg_id::RELOAD}, {"pid", msg._pid}, {"tid", msg._tid}};
+    j = json{{"id", msg._id}, {"pid", msg._pid}, {"tid", msg._tid}};
   }
 
   void from_json(const json& j, reload& msg)
@@ -37,4 +37,5 @@ namespace appdog::messages
     j.at("pid").get_to(msg._pid);
     j.at("tid").get_to(msg._tid);
   }
+#endif
 }

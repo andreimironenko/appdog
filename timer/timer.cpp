@@ -1,19 +1,25 @@
 #include "timer.h"
 #include "timer_.h"
 
-timer::timer(std::chrono::duration<long> period_sec,
+timer::timer(std::chrono::duration<long, std::nano> period_nsec,
      callback_t callback, void* data, bool is_single_shot, int sig) :
-  _timer(new timer_(period_sec, callback, data, is_single_shot, sig))
+  _timer(new timer_(period_nsec, callback, data, is_single_shot, sig))
 {
 }
 
 timer::~timer()
 {
+  syslog(LOG_INFO, "timer::~timer()");
 }
 
 void timer::start()
 {
-  _timer->resume();
+  _timer->start();
+}
+
+void timer::reset()
+{
+  _timer->reset();
 }
 
 void timer::suspend()
@@ -28,5 +34,5 @@ void timer::resume()
 
 void timer::stop()
 {
-  _timer->suspend();
+  _timer->stop();
 }

@@ -14,7 +14,7 @@ class timer {
   public:
   using callback_t = std::function<void(void*)>;
 
-  explicit timer(std::chrono::duration<long> period_sec,
+  explicit timer(std::chrono::duration<long, std::nano> period_nsec,
       callback_t callback = nullptr, void* data = nullptr,
       bool is_single_shot = false, int sig = SIGRTMAX
       );
@@ -27,6 +27,7 @@ class timer {
   timer& operator=(timer&&) = delete;
 
   void start();
+  void reset();
   void suspend();
   void resume();
   void stop();

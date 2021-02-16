@@ -8,8 +8,17 @@
 
 //C++ STL headers
 #include <memory>
+#include <ratio>
+#include <chrono>
+#include <utility>
+
+#include "appdog.h"
 
 #pragma once
+
+//using std::chrono;
+using std::chrono::duration;
+using namespace std::chrono_literals;
 
 // Local headers
 namespace appdog
@@ -18,19 +27,23 @@ namespace appdog
   {
     class client_;
 
-    std::unique_ptr<client_> _client;
-
+    std::shared_ptr<client_> _client;
 
     public:
     explicit client(pid_t pid, long tid = 0);
-    client(const client&) = delete;
-    client(client&&) = delete;
-    client& operator=(const client&) = delete;
-    client& operator=(client&&) = delete;
+    client(const client& rhs);
+    client(client&&) noexcept;
+    client& operator=(const client&);
+    client& operator=(client&&) noexcept;
     ~client();
 
-    int activate(long reset_time=60, int signal=SIGTERM, bool enable_sigterm=false, long delay_after_sigterm=0);
-    int deactivate();
-    int kick();
+   void activate(duration<long, std::nano> reset_time=60s, int signal=SIGTERM,
+        duration<long, std::nano> delay_after_sigterm=0ns);
+   void activateL(long reset_time_ns, int signal, long delay_after_sigterm_ns);
+   void deactivate();
+   void kick();
   };
-} //namespace appdog
+
+  } //namespace appdog
+
+

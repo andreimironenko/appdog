@@ -1,8 +1,15 @@
 #include <sys/types.h>
 
+#include <ratio>
+#include <chrono>
+
 #include "messages/message.h"
 
 #pragma once
+
+using std::chrono::duration;
+using namespace std::chrono_literals;
+
 
 namespace appdog::messages {
 
@@ -13,19 +20,17 @@ namespace appdog::messages {
 
     long _reset_time;
     int _signal;
-    bool _enable_sigterm;
     long _delay_after_sigterm;
 
-#if 0
-    activate(pid_t pid, long tid = 0, long reset_time = 60, int signal = SIGKILL,
-        bool enable_sigterm = false, long delay_after_sigterm = 0):
+    activate(pid_t pid=0, long tid = 0, duration<long, std::nano> reset_time=60s,
+        int sig=SIGTERM, duration<long, std::nano> delay_after_sigterm=0s)
+      :
       message(msg_id::ACTIVATE, pid, tid),
-      _reset_time(reset_time),
-      _signal(signal),
-      _enable_sigterm(enable_sigterm),
-      _delay_after_sigterm(delay_after_sigterm)
+      _reset_time(reset_time.count()),
+      _signal(sig),
+      _delay_after_sigterm(delay_after_sigterm.count())
     {}
-#endif
+
 
     friend bool operator==(const activate& lhs, const activate& rhs)
     {
@@ -35,7 +40,7 @@ namespace appdog::messages {
       }
 
       if (lhs._reset_time != rhs._reset_time || lhs._signal != rhs._signal ||
-          lhs._enable_sigterm != rhs._enable_sigterm || lhs._delay_after_sigterm != rhs._delay_after_sigterm)
+          lhs._delay_after_sigterm != rhs._delay_after_sigterm)
       {
         return false;
       }
@@ -45,8 +50,8 @@ namespace appdog::messages {
 
   void to_json(json& j, const activate& msg)
   {
-    j = json{{"id", msg_id::ACTIVATE}, {"pid", msg._pid}, {"tid", msg._tid},
-      {"reset_time", msg._reset_time}, {"signal", msg._signal}, {"enable_sigterm", msg._enable_sigterm},
+    j = json{{"id", msg._id}, {"pid", msg._pid}, {"tid", msg._tid},
+      {"reset_time", msg._reset_time}, {"signal", msg._signal},
       {"delay_after_sigterm", msg._delay_after_sigterm}
     };
   }
@@ -56,7 +61,6 @@ namespace appdog::messages {
     from_json(j, dynamic_cast<message&>(msg));
     j.at("reset_time").get_to(msg._reset_time);
     j.at("signal").get_to(msg._signal);
-    j.at("enable_sigterm").get_to(msg._enable_sigterm);
     j.at("delay_after_sigterm").get_to(msg._delay_after_sigterm);
   }
 } // namespace appdog::messages

@@ -28,18 +28,17 @@ namespace appdog::messages
   {
     friend void to_json(json& j, const message& msg);
     friend void from_json(const json& j, message& m);
+    friend bool operator==(const message &lhs, const message &rhs);
 
     msg_id _id;
     pid_t _pid;
     long _tid;
 
-#if 0
-    explicit message(msg_id id, pid_t pid, long tid = 0) :
+    message(msg_id id = static_cast<msg_id>(0), pid_t pid = 0, long tid = 0) :
       _id(id),
       _pid(pid),
       _tid(tid)
     {}
-#endif
 
     friend bool operator==(const message &lhs, const message &rhs)
     {

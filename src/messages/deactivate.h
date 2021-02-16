@@ -10,11 +10,9 @@ namespace appdog::messages
     friend void to_json(json& j, const deactivate& msg);
     friend void from_json(const json& j, deactivate& m);
 
-#if 0
-    explicit deactivate(pid_t pid, long tid = 0) :
+    deactivate(pid_t pid = 0, long tid = 0) :
       message(msg_id::DEACTIVATE, pid, tid)
     {}
-#endif
 
     friend bool operator==(const deactivate &lhs, const deactivate &rhs)
     {

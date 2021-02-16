@@ -26,6 +26,8 @@ namespace appdog
     std::unique_ptr<ipc::message_queue> _mq_rx;
     std::unique_ptr<char[]> _rx_buffer;
 
+    void get_confirm_msg();
+
     public:
     explicit client_(pid_t pid, long tid);
     ~client_();
@@ -38,8 +40,8 @@ namespace appdog
     pid_t pid();
     long tid();
 
-    int activate(long reset_time, int signal, bool enable_sigterm, long delay_after_sigterm);
-    int deactivate();
-    int kick();
+    void activate(duration<long, std::nano> reset_time, int signal, duration<long, std::nano> delay_after_sigterm);
+    void deactivate();
+    void kick();
   };
 }

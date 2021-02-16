@@ -7,10 +7,13 @@
 #include <memory>
 #include <map>
 #include <utility>
+#include <chrono>
+#include <ratio>
+#include <functional>
+#include <ostream>
 
 // Linux headers
 #include <signal.h>
-#include <time.h>
 
 // Posix headers
 
@@ -24,47 +27,95 @@
 // local headers
 #include "appdog.h"
 #include "messages/message.h"
+#include "timer.h"
 
 namespace po = boost::program_options;
+using namespace std::chrono;
+
 
 namespace appdog {
+
   class appdogd;
+
 
   appdogd& get_appdogd(int argc = 0, char** argv = nullptr);
 
   using signal_handler_t = void (*) (int);
-  using msg_handler_t = void (*) (size_t size, char*);
   using client_key_t = std::pair<pid_t, long>;
 
-  class appdogd {
+  class appdogd : public std::enable_shared_from_this<appdogd> {
+    class client;
+
     friend appdogd& get_appdogd(int argc, char** argv);
-    
+    friend std::ostream& operator << (std::ostream &out, const appdogd::client& cl);
+
     class client {
+      friend std::ostream& operator << (std::ostream &out, const appdogd::client& cl);
+
+      appdogd* _appdogd;
       pid_t _pid;
       long _tid;
-      long _reset_time;
-      int  _sig;
-      bool _enable_sigterm;
-      long _delay_after_sigterm;
+      duration<long, std::nano> _reset_time;
       std::unique_ptr<ipc::message_queue> _queue;
-      timer_t _timer;
-      timer_t _sigterm_timer;
+      timer::callback_t _timer_handler;
+      timer::callback_t _sigterm_timer_handler;
+      int  _sig;
+      duration<long, std::nano> _delay_after_sigterm;
+      std::unique_ptr<timer> _timer;
+      std::unique_ptr<timer> _sigterm_timer;
 
       std::string queue_name() const;
 
-      
-      public:
-      //client() {throw std::logic_error("appdogd: attempt to allocate an empty client");}
-      explicit client(pid_t pid, long tid, long reset_time, int sig, bool enable_sigterm,
-          long delay_after_sigterm);
-      client(const client&) = delete;
-      client(client&&) = default; 
-      client& operator=(const client&) = delete;
-      client& operator=(client&&) = default;
-      ~client();
+      client() = default;
 
-      timer_t timer() {return _timer;};
-      timer_t sigterm_timer() {return _sigterm_timer;};
+      friend void swap(client& first, client& second) noexcept
+      {
+        std::swap(first._appdogd, second._appdogd);
+
+        //std::swap((long)first._pid, (long)second._pid);
+        pid_t tmp_pid{first._pid};
+        first._pid = second._pid;
+        second._pid = tmp_pid;
+
+        std::swap(first._tid, second._tid);
+        std::swap(first._sig, second._sig);
+
+        //std::swap(first._reset_time, second._reset_time);
+        duration<long, std::nano> tmp_reset_time(first._reset_time);
+        first._reset_time = second._reset_time;
+        second._reset_time = tmp_reset_time;
+
+        //std::swap(first._queue, second._queue);
+        first._queue.swap(second._queue);
+
+        std::swap(first._timer_handler, second._timer_handler);
+        std::swap(first._sigterm_timer_handler, second._sigterm_timer_handler);
+
+        //std::swap(first._delay_after_sigterm, second._delay_after_sigterm);
+        duration<long, std::nano> tmp_sigterm_time(first._delay_after_sigterm);
+        first._delay_after_sigterm = second._delay_after_sigterm;
+        second._delay_after_sigterm = tmp_sigterm_time;
+
+
+        //std::swap(first._timer, second._timer);
+        first._timer.swap(second._timer);
+
+        //std::swap(first._sigterm_timer, second._sigterm_timer);
+        first._sigterm_timer.swap(second._sigterm_timer);
+      }
+
+      public:
+      explicit client(appdogd* appd,
+          pid_t pid, long tid,
+          duration<long, std::nano> reset_time,
+          timer::callback_t timer_handler, timer::callback_t sigterm_timer_handler,
+          int sig = SIGTERM, duration<long, std::nano> delay_after_sigterm = 0s);
+
+      client(const client&) = delete;
+      client(client&& rhs) = default;
+      client& operator=(const client&) = delete;
+      client& operator=(client&& rhs) = default;
+      ~client();
 
       void activate();
       void deactivate();
@@ -73,10 +124,12 @@ namespace appdog {
       pid_t pid() {return _pid;}
       long tid() {return _tid;}
       int signal() {return _sig;}
+      timer* get_timer() {return _timer.get();}
 
       void send(const char* data, size_t size);
-    };
+    }; // class client
 
+    friend client;
 
     static const long FD_OPEN_MAX = 8192;
 
@@ -103,10 +156,8 @@ namespace appdog {
     void set_signals();
 
     void send_confirmation(const client_key_t &client_key);
-    client* find_client(timer_t timer);
-    client* find_client_sigterm_timer(timer_t timer);
 
-    // Actions
+    // actions
     void activate(const json &j);
     void deactivate(const json &j);
     void kick(const json &j);
@@ -117,10 +168,15 @@ namespace appdog {
 
     explicit appdogd(int argc, char** argv);
 
-    public:
+    // timer handlers
+    void timer_handler(void* client_ptr);
+    void sigterm_timer_handler(void* client_ptr);
 
-    static void timer_handler(int sig, siginfo_t *si, void *uc);
-    static void sigterm_timer_handler(int sig, siginfo_t *si, void *uc);
+    // send message to client with (pid, tid)
+    void send(pid_t pid, long tid, const char* data, size_t size);
+    void send_cnf_unknow_client(pid_t pid, long tid);
+
+    public:
 
     appdogd(const appdogd&) = delete;
     appdogd(appdogd&&) = delete;
@@ -135,4 +191,8 @@ namespace appdog {
 
     std::string config_file() const;
     void set_config_file(std::string config_file);
-    int log_level() const; void set_log_level(int level); [[noreturn]] void run(); }; } // namespace appdog
+    int log_level() const; void set_log_level(int level); [[noreturn]] void run();
+  }; //class appdogd
+
+  std::ostream& operator << (std::ostream &out, const appdogd::client& cl);
+} // namespace appdog

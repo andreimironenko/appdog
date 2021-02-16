@@ -15,8 +15,11 @@
 #include <iostream>
 #include <csignal>
 #include <string>
-#include <exception>
 #include <sstream>
+#include <utility>
+#include <sstream>
+#include <stdexcept>
+#include <cerrno>
 
 // Boost C++ headers
 #include <boost/stacktrace.hpp>
@@ -34,29 +37,85 @@ using std::stringstream;
 using namespace appdog::messages;
 
 namespace appdog {
+  
+  std::ostream& operator << (std::ostream &out, const appdogd::client& cl)
+  {
+    out << "_appdogd = 0x" << std::hex << (unsigned long) cl._appdogd << ", ";
+    out << "_pid = " << std::dec << (long) cl._pid << ", ";
+    out << "_tid = " << std::dec << cl._tid << ", ";
+    out << "_reset_time = " << cl._reset_time.count() << " nsec, ";
 
-  appdogd::client::client(pid_t pid, long tid, long reset_time, int sig,
-      bool enable_sigterm, long delay_after_sigterm):
+    if (cl._timer_handler != nullptr)
+      out << "_timer_handler = 0x" << std::hex << (unsigned long) cl._timer_handler.target<void(void*)>() << ", ";
+
+    if (cl._sigterm_timer_handler != nullptr) {
+      out << "_sigterm_timer_handler = 0x" << std::hex <<
+        (unsigned long) cl._sigterm_timer_handler.target<void(void*)>() << ", ";
+    }
+
+    out << "_sig = " << std::dec << cl._sig << ", ";
+    out << "_delay_after_sigterm = " << cl._delay_after_sigterm.count() << " nsec, ";
+
+    if (cl._timer)
+      out << "_timer = " << std::hex << (unsigned long) cl._timer.get() << ", ";
+    if (cl._timer)
+      out << "_sigterm_timer = " << std::hex << (unsigned long) cl._timer.get() << ", ";
+
+    return out;
+  }
+
+  appdogd::client::client(
+      appdogd* appdg,
+      pid_t pid, long tid,
+      duration<long, std::nano> reset_time,
+      timer::callback_t timer_handler,
+      timer::callback_t sigterm_timer_handler,
+      int sig, duration<long, std::nano> delay_after_sigterm):
+    _appdogd(appdg),
     _pid(pid),
     _tid(tid),
     _reset_time(reset_time),
-    _sig(sig),
-    _enable_sigterm(enable_sigterm),
-    _delay_after_sigterm(delay_after_sigterm),
     _queue(std::make_unique<ipc::message_queue>(ipc::open_only, (queue_name().c_str()))),
-    _timer(nullptr),         // timer
-    _sigterm_timer(nullptr)  // sigterm_timer
+    _timer_handler(timer_handler),
+    _sigterm_timer_handler(sigterm_timer_handler),
+    _sig(sig),
+    _delay_after_sigterm(delay_after_sigterm),
+    _timer(nullptr),
+    _sigterm_timer(nullptr)
   {
+    //syslog(LOG_INFO, "appdogd::client this pointer: 0x%0x", (unsigned long)(this));
+    _timer = std::unique_ptr<timer>(
+        new timer (
+          reset_time + delay_after_sigterm,
+          std::bind(&appdogd::timer_handler, _appdogd, std::placeholders::_1),
+          static_cast<void*>(this),
+          true // single shot
+          )
+        );
+
+    syslog(LOG_INFO, "client %ld: %ld with timer 0x%0lx", (unsigned long)(_pid), (unsigned long)_tid,
+        (unsigned long)_timer.get());
+
+    if(_delay_after_sigterm != 0s)
+    {
+      _sigterm_timer = std::unique_ptr<timer>(
+          new timer(
+            reset_time,
+            std::bind(&appdogd::sigterm_timer_handler, _appdogd, std::placeholders::_1),
+            static_cast<void*>(this),
+            true // single shot
+            )
+          );
+    }
+
+    std::stringstream ss;
+    ss << *this;
+    syslog(LOG_INFO, "client %ld:%ld : %s", (unsigned long)(_pid), (unsigned long)_tid, ss.str().c_str());
   }
 
   appdogd::client::~client()
   {
-    if (_timer)
-      timer_delete(_timer);
-
-    if (_sigterm_timer)
-      timer_delete(_sigterm_timer);
-
+    syslog(LOG_INFO, "client %ld: %ld dtor", (long)(_pid), _tid);
     ipc::message_queue::remove(queue_name().c_str());
   }
 
@@ -69,122 +128,45 @@ namespace appdog {
   {
     syslog(LOG_INFO, "activate client %ld: %ld", (long)(_pid), _tid);
 
-    struct itimerspec ts;
-    struct sigaction sa;
-    struct sigevent sev;
+    _timer->start();
 
-    sa.sa_flags = SA_SIGINFO;
-    sa.sa_sigaction = timer_handler;
-    sigemptyset(&sa.sa_mask);
-
-    if (sigaction(SIGRTMAX, &sa, NULL) == -1)
+    if(_sigterm_timer)
     {
-      syslog(LOG_INFO, "call of sigaction(SIGRTMAX) is failed");
-      return;
+      syslog(LOG_INFO, "client %ld: %ld creating sigterm timer", (long)(_pid), _tid);
+      _sigterm_timer->start();
     }
 
-    /* Create and start one timer for each command-line argument */
-    sev.sigev_notify = SIGEV_SIGNAL;    /* Notify via signal */
-    sev.sigev_signo = SIGRTMAX;         /* Notify using this signal*/
-    sev.sigev_value.sival_ptr = &_timer;
-
-    ts.it_value.tv_sec = _enable_sigterm ? _reset_time + _delay_after_sigterm : _reset_time;
-    ts.it_value.tv_nsec = 0;
-
-    ts.it_interval.tv_sec = 0;
-    ts.it_interval.tv_nsec = 0;
-
-    /* Allows handler to get ID of this timer */
-    syslog(LOG_INFO, "creating timer for client(%ld:%ld)", (long)_pid, (long)_tid);
-    if (timer_create(CLOCK_REALTIME, &sev, &_timer) == -1)
-    {
-      syslog(LOG_ERR, "call of timer_create for client(%ld,%ld) is failed",
-          (long)_pid, (long)_tid);
-      return;
-    }
-
-    syslog(LOG_INFO, "firing up %ld sec timer 0x%0lx for client(%ld:%ld) ",
-        _reset_time, (long)_timer, (long)_pid, (long)_tid);
-    if (timer_settime(_timer, 0, &ts, NULL) == -1)
-    {
-      syslog(LOG_ERR, "call of timer_settime for client(%ld,%ld) is failed",
-          (long)_pid, (long)_tid);
-      return;
-    }
-    syslog(LOG_INFO, "activated %ld sec timer 0x%0lx for client(%ld:%ld) ",
-        _reset_time, (long)_timer, (long)_pid, (long)_tid);
-
-
-    if (_enable_sigterm)
-    {
-      // Enable SIGTERM timer
-      sa.sa_flags = SA_SIGINFO;
-      sa.sa_sigaction = sigterm_timer_handler;
-      sigemptyset(&sa.sa_mask);
-
-      if (sigaction(_sig, &sa, NULL) == -1)
-      {
-        syslog(LOG_INFO, "call of sigaction(SIGRTMAX) is failed");
-        return;
-      }
-
-      /* Create and start one timer for each command-line argument */
-      sev.sigev_notify = SIGEV_SIGNAL;    /* Notify via signal */
-      sev.sigev_signo = SIGRTMAX;         /* Notify using this signal*/
-      sev.sigev_value.sival_ptr =_timer;
-
-      ts.it_value.tv_sec = 0;
-      ts.it_value.tv_nsec = 0;
-
-      ts.it_interval.tv_sec = _reset_time;
-      ts.it_interval.tv_nsec = 0;
-
-      /* Allows handler to get ID of this timer */
-      syslog(LOG_INFO, "creating timer for client(%ld:%ld)", (long)_pid, (long)_tid);
-      if (timer_create(CLOCK_REALTIME, &sev, &_sigterm_timer) == -1)
-      {
-        syslog(LOG_ERR, "call of timer_create for client(%ld,%ld) is failed",
-            (long)_pid, (long)_tid);
-        return;
-      }
-
-      if (timer_settime(_sigterm_timer, 0, &ts, NULL) == -1)
-      {
-        syslog(LOG_ERR, "call of timer_settime for client(%ld,%ld) is failed",
-            (long)_pid, (long)_tid);
-        return;
-      }
-    }
+    syslog(LOG_INFO, "client %ld: %ld has activated", (long)(_pid), _tid);
   }
 
   void appdogd::client::deactivate()
   {
-    syslog(LOG_INFO, "killing timer for the client %ld: %ld", static_cast<long>(_pid), _tid);
+    syslog(LOG_INFO, "client::deactivate() for client %ld: %ld", static_cast<long>(_pid), _tid);
 
-    struct itimerspec ts{{0,0}, {0,0}};
-
-    if (timer_settime(_timer, 0, &ts, NULL) == -1)
+    if (_sigterm_timer)
     {
-      syslog(LOG_ERR, "call of timer_settings for client(%ld,%ld) is failed",
-          (long)_pid, (long)_tid);
+    syslog(LOG_INFO, "stopping sigterm_timer for the client %ld: %ld", static_cast<long>(_pid), _tid);
+      _sigterm_timer->stop();
+    }
+
+    syslog(LOG_INFO, "stopping timer for the client %ld: %ld", static_cast<long>(_pid), _tid);
+    //syslog(LOG_INFO, "_timer.get() = 0x%0lx", _timer.get());
+
+    if(!_timer)
+    {
+      syslog(LOG_INFO, "_timer is nullptr");
       return;
     }
-
-    if (_enable_sigterm)
-    {
-      if (timer_settime(_sigterm_timer, 0, &ts, NULL) == -1)
-      {
-        syslog(LOG_ERR, "call of timer_settings for client(%ld,%ld) is failed",
-            (long)_pid, (long)_tid);
-        return;
-      }
-    }
+    _timer->stop();
   }
 
   void appdogd::client::kick()
   {
-    deactivate();
-    activate();
+    if (_sigterm_timer)
+    {
+      _sigterm_timer->reset();
+    }
+    _timer->reset();
   }
 
 
@@ -192,8 +174,9 @@ namespace appdog {
   {
     syslog(LOG_INFO, "sendng data to the client %ld: %ld", static_cast<long>(_pid), _tid);
     _queue->send(data, size, 0);
-  } 
+  }
 
+  // appdogd factory method
   appdogd& get_appdogd(int argc, char** argv)
   {
     static appdogd appd{argc, argv};
@@ -373,107 +356,111 @@ namespace appdog {
     }
   }
 
-  appdogd::client* appdogd::find_client(timer_t timer)
+  // timer handlers
+  void appdogd::timer_handler(void* client_ptr)
   {
-    for (auto& [k, c]: _clients)
+    client* cl = static_cast<client*>(client_ptr);
+    //syslog(LOG_INFO, "timer_handler: cl = 0x%0x", (unsigned long) cl);
+
+    if (!cl)
     {
-      if (c.timer() == timer)
-      {
-        return &c;
-      }
+      syslog(LOG_ERR, "zero client pointer");
+      return;
     }
-    return nullptr;
-  }
 
-  appdogd::client* appdogd::find_client_sigterm_timer(timer_t timer)
-  {
-    for (auto &[k, c]: _clients)
-    {
-      if (c.sigterm_timer() == timer)
-      {
-        return &c;
-      }
-    }
-    return nullptr;
-  }
-
-
-  void appdogd::timer_handler(int sig, siginfo_t *si, void *uc = nullptr)
-  {
-    syslog(LOG_INFO, "timer_handler is called !!!!!!");
-    timer_t timer_id = *(static_cast<timer_t*>(si->si_value.sival_ptr));
-    auto& apdg = get_appdogd();
-    auto cl = apdg.find_client(timer_id);
     auto cl_pid = cl->pid();
     auto cl_tid = cl->tid();
     auto cl_key = client_key_t{cl_pid, cl_tid};
 
-    syslog(LOG_INFO, "time out for client %ld:%ld", (long)(cl_pid), cl_tid);
-    if (!cl)
-    {
-      syslog(LOG_ERR, "unexpected timer 0x%08lx signal %d ", (unsigned long)(timer_id), sig);
-      return;
-    }
+    std::stringstream ss;
+    ss << *cl;
+    syslog(LOG_INFO, "timer_handler: client %ld:%ld : %s", (unsigned long)(cl_pid), (unsigned long)cl_tid, ss.str().c_str());
+
 
     syslog(LOG_INFO, "sending signal %d to client %ld:%ld", cl->signal(), (long)(cl_pid), cl_tid);
     auto ret = kill(cl_pid, cl->signal());
-
     if (ret != 0)
     {
       syslog(LOG_ERR, "kill(%ld, %d) returns %d, %s", (long)cl_pid, cl->signal(), errno, strerror(errno));
+      throw std::runtime_error("kill has failed");
     }
 
     syslog(LOG_INFO, "deactivating client %ld:%ld", (long)(cl_pid), cl_tid);
     cl->deactivate();
-    apdg._clients.erase(cl_key);
+
+    syslog(LOG_INFO, "erasing client %ld:%ld", (long)(cl_pid), cl_tid);
+    _clients.erase(cl_key);
   }
 
-
-  void appdogd::sigterm_timer_handler(int sig, siginfo_t *si, void *uc = nullptr)
+  void appdogd::sigterm_timer_handler(void* client_ptr)
   {
+    auto cl = static_cast<client*>(client_ptr);
 
-  }
-
-  void appdogd::send_confirmation(const client_key_t &client_key)
-  {
-    auto [pid, tid] = client_key;
-    syslog(LOG_INFO, "sendng a confirmation back to the client %ld: %ld", static_cast<long>(pid), tid);
-
-    messages::confirm cnf;
-    cnf._pid = pid;
-    cnf._tid = tid;
-    json jcnf = cnf;
-    auto text = jcnf.dump();
-
-    if(auto iter = _clients.find(client_key); iter != _clients.end())
+    if (!cl)
     {
-      iter->second.send(text.c_str(), text.size());
+      syslog(LOG_ERR, "zero client pointer");
+      return;
     }
   }
 
+  void appdogd::send(pid_t pid, long tid, const char* data, size_t size)
+  {
+    std::string queue_name(std::to_string(pid) + "_" + std::to_string(tid));
+    auto client_queue = std::make_unique<ipc::message_queue>(ipc::open_only, (queue_name.c_str()));
+    client_queue->send(data, size, 0);
+  }
+
+  void appdogd::send_cnf_unknow_client(pid_t pid, long tid)
+  {
+    messages::confirm cnf(pid, tid, appdog::make_error_code(error::unknown_client));
+    json jcnf = cnf;
+    auto text = jcnf.dump();
+    send(pid, tid, text.c_str(), text.size());
+  }
 
   void appdogd::activate(const json &j)
   {
     auto msg = j.get<messages::activate>();
     const auto& client_key = client_key_t(msg._pid, msg._tid);
 
+    syslog(LOG_INFO, "appdogd::activate client %ld: %ld", static_cast<long>(msg._pid), msg._tid);
+
     //add_client just returns if the client already exists
-    auto [iter, res] = _clients.try_emplace(client_key, appdogd::client(msg._pid, msg._tid, msg._reset_time,
-          msg._signal, msg._enable_sigterm, msg._delay_after_sigterm));
+    auto [iter, res] = _clients.try_emplace(
+        client_key,
+        std::move(
+          *(new appdogd::client(
+            this,
+            msg._pid, msg._tid,
+            duration<long, std::nano>(msg._reset_time),
+            std::bind(&appdogd::timer_handler, this, std::placeholders::_1),
+            std::bind(&appdogd::sigterm_timer_handler, this, std::placeholders::_1),
+            msg._signal,
+            duration<long, std::nano>(msg._delay_after_sigterm)
+            ))
+          )
+        );
 
     if (res)
     {
-      iter->second.activate();
+      syslog(LOG_INFO, "sendng a confirmation back to the client %ld: %ld", static_cast<long>(msg._pid), msg._tid);
+      auto& client = iter->second;
+      client.activate();
+
+      messages::confirm cnf(_pid, 0);
+      json jcnf = cnf;
+      auto text = jcnf.dump();
+
+      client.send(text.c_str(), text.size());
     }
-
-    syslog(LOG_INFO, "sendng a confirmation back to the client %ld: %ld", static_cast<long>(msg._pid), msg._tid);
-    messages::confirm cnf;
-    cnf._pid = _pid;
-    cnf._tid = 0;
-    json jcnf = cnf;
-    auto text = jcnf.dump();
-
-   iter->second.send(text.c_str(), text.size());
+    else
+    {
+      syslog(LOG_ERR, "failed to create the client %ld: %ld", static_cast<long>(msg._pid), msg._tid);
+      messages::confirm cnf(_pid, 0, appdog::make_error_code(error::failed_create_client));
+      json jcnf = cnf;
+      auto text = jcnf.dump();
+      send(msg._pid, msg._tid, text.c_str(), text.size());
+    }
   }
 
   void appdogd::deactivate(const json &j)
@@ -485,19 +472,21 @@ namespace appdog {
 
     if(auto iter = _clients.find(client_key); iter != _clients.end())
     {
-      iter->second.deactivate();
+      auto& client = iter->second;
+      client.deactivate();
       syslog(LOG_INFO, "sendng a confirmation back to the client %ld: %ld", static_cast<long>(msg._pid), msg._tid);
-      messages::confirm cnf;
-      cnf._pid = _pid;
-      cnf._tid = 0;
+      messages::confirm cnf(_pid, 0);
       json jcnf = cnf;
       auto text = jcnf.dump();
 
-      iter->second.send(text.c_str(), text.size());
+      client.send(text.c_str(), text.size());
+      syslog(LOG_INFO, "erasing client %ld:%ld", (long)(msg._pid), msg._tid);
+      _clients.erase(client_key);
     }
     else
     {
       syslog(LOG_ERR, "client %ld: %ld is unknown", static_cast<long>(msg._pid), msg._tid);
+      send_cnf_unknow_client(msg._pid, msg._tid);
     }
   }
 
@@ -524,8 +513,8 @@ namespace appdog {
     else
     {
       syslog(LOG_ERR, "client %ld: %ld is unknown", static_cast<long>(msg._pid), msg._tid);
+      send_cnf_unknow_client(msg._pid, msg._tid);
     }
-
   }
 
   void appdogd::clients(const json &j)
@@ -548,9 +537,6 @@ namespace appdog {
 
   }
 
-
-
-
   [[noreturn]] void appdogd::run()
   {
     parse_cli_options();
@@ -565,11 +551,11 @@ namespace appdog {
     while(true)
     {
       try {
-      _mq_rx->receive(_rx_buffer.get(), MQ_MAX_MSG_SIZE, received_size, priority);
+        _mq_rx->receive(_rx_buffer.get(), MQ_MAX_MSG_SIZE, received_size, priority);
 
-      syslog(LOG_INFO, "recvd_size %ld", received_size);
-      auto msg = std::string(_rx_buffer.get(), received_size);
-      syslog(LOG_INFO, "message: %s", msg.c_str());
+        syslog(LOG_INFO, "recvd_size %ld", received_size);
+        auto msg = std::string(_rx_buffer.get(), received_size);
+        syslog(LOG_INFO, "message: %s", msg.c_str());
         auto json_object = json::parse(msg);
         auto message_id = json_object["id"].get<messages::msg_id>();
         if (message_id >= msg_id::MESSAGE_MAX)
@@ -616,7 +602,6 @@ int main(int argc, char** argv)
     //ss << st;
     syslog(LOG_INFO, "stacktrace: %s", ss.str().c_str());
   }
-
 
   return 0;
 }
