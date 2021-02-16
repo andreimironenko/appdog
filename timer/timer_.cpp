@@ -12,13 +12,7 @@ void timer::timer_::signal_handler(int sig, siginfo_t *si, void *uc)
   if (tm && sig == tm->_signal)
   {
     syslog(LOG_INFO, "timer_::signal_handler with period_nsec = %ld has expired", tm->_period.count());
-    syslog(LOG_INFO, "timer_::signal_handler timer->data = 0x%0x", (unsigned long) tm->_data);
-#if 0
-    if (tm->_is_single_shot)
-    {
-      tm->stop();
-    }
-#endif
+    syslog(LOG_INFO, "timer_::signal_handler timer->data = 0x%0lx", (unsigned long) tm->_data);
     tm->_callback(tm->_data);
   }
 }
@@ -127,7 +121,7 @@ void timer::timer_::suspend()
 {
   struct itimerspec ts;
 
-  syslog(LOG_INFO, "trying to suspend timer 0x%x0X", (unsigned long)(_timer));
+  syslog(LOG_INFO, "trying to suspend timer 0x%0lx", (unsigned long)(_timer));
 
   //get current time from timer
   if (timer_gettime(_timer, &ts) != 0)
@@ -158,14 +152,14 @@ void timer::timer_::suspend()
     throw std::runtime_error("Failed to settime timer");
   }
 
-  syslog(LOG_INFO, "timer 0x%x0lX is suspended", (unsigned long)(_timer));
+  syslog(LOG_INFO, "timer 0x%0lx is suspended", (unsigned long)(_timer));
 }
 
 void timer::timer_::resume()
 {
   struct itimerspec ts;
 
-  syslog(LOG_INFO, "trying to resume timer 0x%x0lX", (unsigned long)(_timer));
+  syslog(LOG_INFO, "trying to resume timer 0x%0lx", (unsigned long)(_timer));
 
   //get current time from timer
   if (timer_gettime(_timer, &ts) != 0)
@@ -173,18 +167,18 @@ void timer::timer_::resume()
     throw std::runtime_error("Failed to gettime timer");
   }
 
-  syslog(LOG_INFO, "the timer 0x%x0lX ts: %ld, %ld, %ld, %ld", (unsigned long)(_timer),
+  syslog(LOG_INFO, "the timer 0x%0lx ts: %ld, %ld, %ld, %ld", (unsigned long)(_timer),
       ts.it_value.tv_sec, ts.it_value.tv_nsec,
       ts.it_interval.tv_sec, ts.it_interval.tv_nsec
       );
 
   if (ts.it_value.tv_sec != 0 || ts.it_value.tv_nsec != 0)
   {
-    syslog(LOG_INFO, "the timer 0x%x0lX is already running", (unsigned long)(_timer));
+    syslog(LOG_INFO, "the timer 0x%0lx is already running", (unsigned long)(_timer));
     return;
   }
 
-  syslog(LOG_INFO, "the timer 0x%x0lX _ts: %ld, %ld, %ld, %ld", (unsigned long)(_timer),
+  syslog(LOG_INFO, "the timer 0x%0lx _ts: %ld, %ld, %ld, %ld", (unsigned long)(_timer),
       _ts.it_value.tv_sec, _ts.it_value.tv_nsec,
       _ts.it_interval.tv_sec, _ts.it_interval.tv_nsec
       );
@@ -194,12 +188,12 @@ void timer::timer_::resume()
     throw std::runtime_error("Failed to start timer");
   }
 
-  syslog(LOG_INFO, "timer 0x%x0lX is resumed", (unsigned long)(_timer));
+  syslog(LOG_INFO, "timer 0x%0lx is resumed", (unsigned long)(_timer));
 }
 
 void timer::timer_::stop()
 {
-  syslog(LOG_INFO, "timer::timer_ trying to stop timer 0x%x0lX", (unsigned long)(_timer));
+  syslog(LOG_INFO, "timer::timer_ trying to stop timer 0x%0lx", (unsigned long)(_timer));
   _ts.it_value.tv_sec = 0;
   _ts.it_value.tv_nsec = 0;
 
@@ -213,5 +207,5 @@ void timer::timer_::stop()
     throw std::runtime_error("Failed to settime timer");
   }
 
-  syslog(LOG_INFO, "timer::timer_ stopped timer 0x%x0lX", (unsigned long)(_timer));
+  syslog(LOG_INFO, "timer::timer_ stopped timer 0x%0lx", (unsigned long)(_timer));
 }
