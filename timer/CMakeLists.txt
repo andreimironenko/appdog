@@ -1,6 +1,8 @@
+# Simple wrapper library around POSIX timer API
 
 set(CMAKE_CXX_STANDARD 17)
 set(BUILD_SHARED_LIBS YES)
+
 
 include_directories(../include)
 
